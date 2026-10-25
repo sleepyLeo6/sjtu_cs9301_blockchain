@@ -180,6 +180,170 @@ C 对交易 $t_1$ 执行了一系列检查。
 3. 交易是否符合本地记录对应的规则。
 4. 交易是否满足本地接纳条件。
 
+#### 交易纳入本地池 和 交易得到区块链共识确认：
+
+从交易进入本地交易池（Mempool），到最终获得区块链确认，中间还需要经历矿工选择交易、构造候选区块、PoW 挖矿、区块广播、全网独立验证和链选择等步骤。
+
+首先要区分两个概念：
+- 交易被接受（Accepted）：某个节点认为交易有效且符合自己的交易池策略，愿意暂时保存并传播它。
+- 交易被确认（Confirmed）：交易已经被包含在主链上的有效区块中。随着后续区块不断增加，这笔交易的确认深度也随之增加。
+
+我们以 Bitcoin 的 PoW 共识为例，从交易产生开始理解整个流程。
+
+##### 1. 交易从产生到确认的完整生命周期
+
+```mermaid
+flowchart TD
+    A["① 创建并签名交易<br/>用户构造交易 t₁ 并签名"]
+    B["② 本地验证与准入<br/>节点 A 验证后，将 t₁ 放入 Mempool"]
+    C["③ P2P 网络传播<br/>inv → getdata → tx<br/>其他节点独立验证并决定是否入池"]
+    D["④ 矿工选择交易<br/>从 Mempool 选择交易，构造候选区块"]
+    E["⑤ PoW 挖矿<br/>寻找满足难度目标的有效区块哈希"]
+    F["⑥ 区块广播与验证<br/>其他节点验证区块及其交易"]
+    G["⑦ 链选择与确认<br/>区块进入有效的最佳链<br/>后续区块增加确认深度"]
+
+    A --> B --> C --> D --> E --> F --> G
+```
+
+##### 2. 进入 Mempool 后，究竟发生了什么？
+
+**第一步：矿工从 Mempool 中选择交易**
+
+假设节点 A、B、C 都已经收到了交易 $t_1$。
+
+此时：
+- A、B、C 的 Mempool 中可能都有 $t_1$。
+- $t_1$ 仍然是一笔未确认交易（Unconfirmed Transaction）。
+- 矿工 M 也可能已经收到 $t_1$。
+矿工需要从自己的 Mempool 中选择交易，构造一个候选区块（Candidate Block）。
+
+为什么还要选择？
+
+因为区块容量有限，矿工无法保证把所有待确认交易都装入下一个区块。
+
+矿工通常会优先考虑能带来较高手续费收益的交易，尤其是手续费率（Fee Rate），同时也要考虑交易之间的依赖关系。
+
+例如：
+
+```mermaid
+flowchart LR
+    M["Miner M 的 Mempool<br/>t₁、t₂、t₃、t₄、t₅"]
+    B["候选区块 B₁<br/>t₁、t₃、t₄"]
+
+    M -->|选择三笔交易| B
+
+    style M fill:#fafafa,stroke:#d9d9d9,color:#222
+    style B fill:#eef3fb,stroke:#cfd7e3,color:#222
+```
+
+示意：矿工 M 选择了三笔交易，$t_2$ 和 $t_5$ 仍留在交易池等待后续机会。
+
+此时矿工虽然选择了 $t_1$，但 $t_1$ 仍然没有获得区块链确认。
+
+**第二步：矿工构造区块并执行 PoW**
+
+矿工将选中的交易组成候选区块，并构造区块头。
+
+你之前学过 PoW 的核心条件：
+$$
+H(\text{BlockHeader}) < \text{Target}
+$$
+
+矿工通过不断调整区块头相关数据，寻找满足难度目标的哈希值。
+
+这里最重要的是：构造候选区块不等于成功出块。
+
+多个矿工可以同时尝试创建下一个区块，只有找到有效 PoW 的候选区块，才有资格被网络接受。
+
+**第三步：矿工广播新产生的区块**
+
+假设矿工 M 找到了有效的 PoW。
+
+它向其他节点广播新区块 $B_1$。
+
+其他节点收到区块后，不能因为 M 声称挖矿成功就直接接受，而是要独立验证：
+1. 区块的 PoW 是否满足难度要求？
+2. 区块结构和前一区块哈希引用是否正确？
+3. 区块中所有交易是否符合共识规则？
+4. 是否存在双重花费？
+5. 区块奖励、区块权重等是否符合规则？
+
+只有验证通过，节点才会接受该有效区块。[来源](https://help.blockstream.com/education/nodes/introduction-and-role/what-is-the-role-of-a-node-in-mining?utm_source=chatgpt.com)
+
+这一点与之前的 Mempool 准入不同：
+
+Mempool 接受的是一笔待确认交易；区块验证决定这笔交易能否成为正式区块链历史的一部分。
+
+**第四步：节点更新区块链状态**
+
+假设有效区块 $B_1$ 被节点接收，且成为该节点当前最佳有效链的区块。
+
+该节点就会按照 $B_1$ 内的交易顺序更新 UTXO 集合。
+
+例如：
+
+交易 $t_1$ 花费 Alice 的某个 UTXO，并创建属于 Bob 的新 UTXO。
+
+当 $B_1$ 被连接到当前最佳链时：
+- Alice 被花费的 UTXO 从集合中移除。
+- Bob 收到的新 UTXO 被加入集合。
+- $t_1$ 从节点的 Mempool 中移除。
+
+此时，$t_1$ 获得 **1 次确认（1 Confirmation）**。
+
+但注意，这不代表所有节点必须先通过投票批准这个区块。Bitcoin 的节点各自按照统一的共识规则验证区块，并通过累计工作量最多的有效链规则处理竞争分叉
+
+##### 3. 为什么一笔交易进入区块后，还要等待更多确认？
+
+这里涉及你之前学习过的 PoW 分叉问题。
+
+假设交易 $t_1$ 已经包含在区块 $B_{100}$ 中。
+
+```mermaid
+flowchart LR
+    B99["B₉₉<br/>前一区块"]
+    subgraph CONF["t₁ 当前获得 4 次确认：B₁₀₀ 本身 + 后面 3 个区块"]
+        direction LR
+        B100["B₁₀₀<br/>包含 t₁<br/>第 1 次确认"]
+        B101["B₁₀₁<br/>后续区块<br/>第 2 次确认"]
+        B102["B₁₀₂<br/>后续区块<br/>第 3 次确认"]
+        B103["B₁₀₃<br/>链头<br/>第 4 次确认"]
+        B100 --> B101 --> B102 --> B103
+    end
+    B99 --> B100
+
+    classDef block fill:#e9ecf0,stroke:#64748b,stroke-width:2px,color:#111
+    classDef included fill:#cfecdc,stroke:#16a34a,stroke-width:2px,color:#111
+    class B99,B101,B102,B103 block
+    class B100 included
+    style CONF fill:#f7fcf8,stroke:#16a34a,color:#15803d
+```
+
+确认次数的计算公式为：
+$$
+\text{Confirmations}=H_{\text{tip}}-H_{\text{tx}}+1
+$$
+
+其中 $H_{\text{tip}}$ 是当前链头高度，$H_{\text{tx}}$ 是包含交易的区块高度。
+
+为什么要等待后续区块？
+
+因为可能存在两个矿工几乎同时找到有效区块，导致网络出现临时分叉。
+
+假设：
+- 矿工 M 生成 $B_{100}$，包含交易 $t_1$。
+- 矿工 N 同时生成 $B'_{100}$，不包含 $t_1$。
+两个区块可能都有效，但它们属于不同的分支。
+
+如果后续 $B'_{100}$ 所在分支成为累计工作量更多的有效链，节点就可能发生 Chain Reorganization（链重组）。
+
+这意味着 $t_1$ 原来的确认可能被撤销。如果它仍然有效且符合本地策略，可以重新进入 Mempool，等待后续确认。
+
+所以 Bitcoin 的确认具有概率最终性（Probabilistic Finality）：
+- 1 次确认：交易已进入当前最佳链。
+- 多次确认：交易被链重组撤销的风险通常进一步降低。
+- 不存在一个固定确认次数，可以在协议层面保证绝对不可逆
+
 ### 向其他节点传播
 
 ## local view
@@ -190,7 +354,21 @@ C 对交易 $t_1$ 执行了一系列检查。
 
 ## deduplication
 
-![deduplication](./week06_img/deduplication.png)
+```mermaid
+flowchart LR
+    B("B")
+    C("C")
+    D("D<br/>已有 t₁")
+
+    B -->|"先取得 t₁"| D
+    C -.->|"后收到 inv(h₁)"| D
+
+    style B fill:#dceafa,stroke:#528bc1,stroke-width:2px,color:#254e70
+    style C fill:#dceafa,stroke:#528bc1,stroke-width:2px,color:#254e70
+    style D fill:#dbf3eb,stroke:#48a68e,stroke-width:2px,color:#235e53
+    linkStyle 0 stroke:#377fc5,stroke-width:3px
+    linkStyle 1 stroke:#c68b30,stroke-width:3px
+```
 
 根据 Page 44 的案例：
 1. D 已经从 B 取得并暂存 $t_1$。
@@ -517,7 +695,7 @@ $$
 
 ### 3.1.4 交易接纳与区块获取是两种不同任务
 
-### 3.1.5 区块请求为什么需要超市机制
+### 3.1.5 区块请求为什么需要超时机制
 
 #### 3.1.5.1 设计动机
 

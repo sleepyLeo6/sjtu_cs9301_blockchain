@@ -2,3 +2,5 @@
 *.html
 *_img
 *.docx
+*.png
+.DS_Store
